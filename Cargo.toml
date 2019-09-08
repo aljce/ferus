@@ -1,0 +1,7 @@
+[package]
+name = "ferus"
+version = "0.1.0"
+authors = ["Alice McKean <mckeank@reed.edu>", "Henry Blanchette <blancheh@reed.edu>" ]
+edition = "2018"
+
+[dependencies]
