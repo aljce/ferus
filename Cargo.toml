@@ -5,3 +5,4 @@ authors = ["Alice McKean <mckeank@reed.edu>", "Henry Blanchette <blancheh@reed.e
 edition = "2018"
 
 [dependencies]
+combine = { git = "https://github.com/Marwes/combine" }
