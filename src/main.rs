@@ -15,8 +15,12 @@ use expr::{expn};
 const STACK_SIZE: usize = 100 * 1024 * 1024;
 
 fn run() {
-    // let input = "12 + 1 mod 3 < x - 1 * 2";
-    let input = "12 + 1";
+    let input = "let val x = 2 in if 12 + (1 * 2) mod 3 < x - 2 ** 3 then 1 else 0 end";
+    // use combine::StreamOnce;
+    // let mut tokenizer = Tokenizer::new(input);
+    // while let Ok(t) = tokenizer.uncons() {
+    //     println!("{:?}", t)
+    // };
     let tokenizer = Tokenizer::new(input);
     match expn().parse(tokenizer) {
         Ok((expr, _)) => println!("{}", expr),
@@ -25,7 +29,6 @@ fn run() {
 }
 
 fn main() {
-    // The parser needs a lot of stack
     let child = thread::Builder::new()
         .stack_size(STACK_SIZE)
         .spawn(run)

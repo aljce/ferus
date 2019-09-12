@@ -1,8 +1,8 @@
+use std::fmt;
 use combine::{
-    Parser, ParseError,
-    Stream, RangeStream,
+    Parser, Stream, RangeStream,
     stream::{StreamOnce, Positioned, ResetStream},
-    choice, unexpected_any, between,
+    choice, between, attempt,
     parser::char::{char, spaces, string},
     parser::range::{take_while1},
 };
@@ -11,84 +11,111 @@ use combine::{
 pub enum Literal<'a> {
     Integer(i64),
     String(&'a str),
-    Boolean(bool)
+    Boolean(bool),
 }
 
+impl<'a> fmt::Display for Literal<'a> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        use Literal::*;
+        match *self {
+            Integer(i) => write!(f, "{}", i),
+            String(s)  => write!(f, "{}", s),
+            Boolean(b) => write!(f, "{}", b)
+        }
+    }
+}
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Copy, Clone, Hash)]
 pub enum Direction {
     Left,
-    Right
+    Right,
 }
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Copy, Clone, Hash)]
-pub enum Operation {
+pub enum Reserved {
     Add,
     Sub,
     Mult,
     Div,
     Mod,
+    Exp,
     Equal,
-    LessThan
+    LessThan,
+    OrElse,
+    AndAlso,
+    If,
+    Then,
+    Else,
+    Not,
+    Let,
+    Val,
+    In,
+    End
 }
-
-#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Copy, Clone, Hash)]
-pub enum Reserved {} /// no reserved keywords yet
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Hash)]
 pub enum Token<'a> {
-    Var(&'a str),
+    Name(&'a str),
     Lit(Literal<'a>),
     Paren(Direction),
-    Binary(Operation),
-    Keyword(Reserved)
+    Keyword(Reserved),
 }
 
-fn literal<'a, Input>() -> impl Parser<Input, Output = Literal<'a>>
-where Input: RangeStream<Item = char, Range = &'a str>,
-      Input::Error: ParseError<Input::Item, Input::Range, Input::Position>
-{
-    let integer = take_while1(|c: char| c.is_digit(10)).map(|string: &'a str| string.parse::<i64>().unwrap());
-    let boolean = choice((string("true").map(|_| true), string("false").map(|_| false)));
-    choice((integer.map(Literal::Integer), boolean.map(Literal::Boolean)))
+parser!{
+    pub fn literal['a, Input]()(Input) -> Literal<'a>
+    where [ Input: RangeStream<Item = char, Range = &'a str> ]
+    {
+        use Literal::*;
+        let integer = take_while1(|c: char| c.is_digit(10)).map(|string: &'a str| string.parse::<i64>().unwrap());
+        let boolean = choice((
+            attempt(string("true")).map(|_| true),
+            attempt(string("false")).map(|_| false)
+        ));
+        choice((integer.map(Integer), boolean.map(Boolean)))
+    }
 }
 
-fn operation<Input>() -> impl Parser<Input, Output = Operation>
-where Input: Stream<Item = char>,
-      Input::Error: ParseError<Input::Item, Input::Range, Input::Position>
-{
-    choice((
-        char('+').map(|_| Operation::Add),
-        char('-').map(|_| Operation::Sub),
-        char('*').map(|_| Operation::Mult),
-        string("div").map(|_| Operation::Div),
-        string("mod").map(|_| Operation::Mod),
-        char('=').map(|_| Operation::Equal),
-        char('<').map(|_| Operation::LessThan)
-    ))
+parser!{
+    pub fn reserved[Input]()(Input) -> Reserved
+    where [ Input: Stream<Item = char> ]
+    {
+        use Reserved::*;
+        choice((
+            attempt(char('+')).map(|_| Add),
+            attempt(char('-')).map(|_| Sub),
+            attempt(string("**")).map(|_| Exp),
+            attempt(char('*')).map(|_| Mult),
+            attempt(string("div")).map(|_| Div),
+            attempt(string("mod")).map(|_| Mod),
+            attempt(char('=')).map(|_| Equal),
+            attempt(char('<')).map(|_| LessThan),
+            attempt(string("orelse")).map(|_| OrElse),
+            attempt(string("andalso")).map(|_| AndAlso),
+            attempt(string("if")).map(|_| If),
+            attempt(string("then")).map(|_| Then),
+            attempt(string("else")).map(|_| Else),
+            attempt(string("not")).map(|_| Not),
+            attempt(string("let")).map(|_| Let),
+            attempt(string("val")).map(|_| Val),
+            attempt(string("in")).map(|_| In),
+            attempt(string("end")).map(|_| End)
+        ))
+    }
 }
 
-fn reserved<Input>() -> impl Parser<Input, Output = Reserved>
-where Input: Stream<Item = char>,
-      Input::Error: ParseError<Input::Item, Input::Range, Input::Position>
-{
-    unexpected_any("No reserved keywords yet")
-}
-
-pub fn token<'a, Input>() -> impl Parser<Input, Output = Token<'a>>
-where Input: RangeStream<Item = char, Range = &'a str>,
-      Input::Error: ParseError<Input::Item, Input::Range, Input::Position>
-{
-    let paren = choice((
-        char('(').map(|_| Token::Paren(Direction::Left)),
-        char(')').map(|_| Token::Paren(Direction::Right))
-    ));
-    choice((
-        literal().map(Token::Lit),
-        paren,
-        operation().map(Token::Binary),
-        reserved().map(Token::Keyword),
-        take_while1(|c: char| c.is_alphabetic()).map(Token::Var)
-    ))
+parser!{
+    pub fn token['a, Input]()(Input) -> Token<'a>
+    where [ Input: RangeStream<Item = char, Range = &'a str> ]
+    {
+        use Token::*;
+        use Direction::*;
+        choice((
+            literal().map(Lit),
+            char('(').map(|_| Paren(Left)),
+            char(')').map(|_| Paren(Right)),
+            reserved().map(Keyword),
+            take_while1(|c: char| c.is_alphabetic()).map(Name)
+        ))
+    }
 }
 
 pub struct Tokenizer<'a> {
@@ -97,7 +124,7 @@ pub struct Tokenizer<'a> {
     current: usize
 }
 
-#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Hash)]
+#[derive(PartialEq, Eq, PartialOrd, Ord, Clone, Hash)]
 pub struct Checkpoint<'a> {
     stream: &'a str
 }
