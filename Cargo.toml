@@ -6,3 +6,4 @@ edition = "2018"
 
 [dependencies]
 combine = { git = "https://github.com/Marwes/combine" }
+rustyline = "5.0.2"
