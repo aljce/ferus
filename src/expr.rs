@@ -1,8 +1,8 @@
 use std::iter;
 use std::fmt;
 use combine::{
-    Stream, satisfy, satisfy_map, choice, between,
-    chainl1, chainr1, attempt
+    Parser, Stream, satisfy, satisfy_map, choice, between,
+    chainl1, attempt, optional
 };
 
 use crate::lexer::{Literal, Direction, Reserved, Token};
@@ -29,7 +29,6 @@ pub enum BinaryOp {
     Mult,
     Div,
     Mod,
-    Exp,
     Equal,
     LessThan,
     OrElse,
@@ -45,7 +44,6 @@ impl fmt::Display for BinaryOp {
             Mult => "(*)",
             Div => "div",
             Mod => "mod",
-            Exp => "(**)",
             Equal => "(=)",
             LessThan => "(<)",
             OrElse => "orelse",
@@ -55,7 +53,7 @@ impl fmt::Display for BinaryOp {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum Expr<'a> {
     Var(&'a str),
     Lit(Literal<'a>),
@@ -221,17 +219,48 @@ parser!{
     }
 }
 
+parser!{
+    pub fn space['a, Input]()(Input) -> ()
+    where [ Input: Stream<Item = Token<'a>> ]
+    {
+        satisfy_map(|t| match t {
+            Token::Space(n) if 0 < n => Some(()),
+            _ => None
+        })
+    }
+}
+
+
+parser!{
+    #[derive(Clone)]
+    pub struct Lex;
+    pub fn lex['a, Input, P](f: P)(Input) -> P::Output
+    where [ Input: Stream<Item = Token<'a>>, P: Parser<Input> ]
+    {
+        // (f, space()).map(|(v, _)| v)
+        between(optional(space()), optional(space()), f)
+    }
+}
+
+// <prog> ::= <expn>EOF
 // <expn> ::= let val <name> = <expn> in <expn> end | if <expn> then <expn> else <expn> | <disj>
 // <disj> ::= <disj> orelse <conj> | <conj>
 // <conj> ::= <conj> andalso <cmpn> | <cmpn>
 // <cmpn> ::= <addn> = <addn> | <addn> < <addn> | <addn>
 // <addn> ::= <addn> + <mult> | <addn> - <mult> | <mult>
-// <mult> ::= <mult> * <pown> | <mult> div <pown> | <mult> mod <pown> | <pown>
-// <pown> ::= <nega> ** <pown> | <nega>
+// <mult> ::= <mult> * <nega> | <mult> div <nega> | <mult> mod <nega> | <nega>
 // <nega> ::= not <atom> | <atom>
 // <atom> ::= <name> | <numn> | true | false | ( <expn> )
 // <name> ::= a | b | c | ...
 // <numn> ::= 0 | 1 | 2 | ...
+parser!{
+    pub fn prog['a, Input]()(Input) -> Expr<'a>
+    where [ Input: Stream<Item = Token<'a>> ]
+    {
+        (expn(), token(Token::EndOfFile)).map(|(expr, _)| expr)
+    }
+}
+
 parser!{
     pub fn expn['a, Input]()(Input) -> Expr<'a>
     where [ Input: Stream<Item = Token<'a>> ]
@@ -240,23 +269,23 @@ parser!{
         use Expr::*;
         let let_val = struct_parser!{
             Let {
-                _: token(Keyword(Reserved::Let)),
-                _: token(Keyword(Reserved::Val)),
-                name: name(),
-                _: token(Keyword(Reserved::Equal)),
-                binder: expn().map(Box::new),
-                _: token(Keyword(Reserved::In)),
-                child: expn().map(Box::new),
+                _: lex(token(Keyword(Reserved::Let))),
+                _: lex(token(Keyword(Reserved::Val))),
+                name: lex(name()),
+                _: lex(token(Keyword(Reserved::Equal))),
+                binder: lex(expn().map(Box::new)),
+                _: lex(token(Keyword(Reserved::In))),
+                child: lex(expn().map(Box::new)),
                 _: token(Keyword(Reserved::End)),
             }
         };
         let if_then_else = struct_parser!{
             IfThenElse {
-                _: token(Keyword(Reserved::If)),
-                condition: expn().map(Box::new),
-                _: token(Keyword(Reserved::Then)),
-                if_branch: expn().map(Box::new),
-                _: token(Keyword(Reserved::Else)),
+                _: lex(token(Keyword(Reserved::If))),
+                condition: lex(expn().map(Box::new)),
+                _: lex(token(Keyword(Reserved::Then))),
+                if_branch: lex(expn().map(Box::new)),
+                _: lex(token(Keyword(Reserved::Else))),
                 else_branch: expn().map(Box::new)
             }
         };
@@ -284,10 +313,10 @@ parser!{
     pub fn conj['a, Input]()(Input) -> Expr<'a>
     where [ Input: Stream<Item = Token<'a>> ]
     {
-        let binary = satisfy_map(|t| match t {
+        let binary = lex(satisfy_map(|t| match t {
             Token::Keyword(Reserved::AndAlso) => Some(BinaryOp::AndAlso),
             _ => None
-        }).map(|op| move |left, right| Expr::Binary {
+        })).map(|op| move |left, right| Expr::Binary {
             left: Box::new(left),
             operation: op,
             right: Box::new(right)
@@ -301,11 +330,11 @@ parser!{
     where [ Input: Stream<Item = Token<'a>> ]
     {
         use Expr::*;
-        let comparison = satisfy_map(|t| match t {
+        let comparison = lex(satisfy_map(|t| match t {
             Token::Keyword(Reserved::Equal) => Some(BinaryOp::Equal),
             Token::Keyword(Reserved::LessThan) => Some(BinaryOp::LessThan),
             _ => None
-        });
+        }));
         let binary = struct_parser!{
             Binary {
                 left: add().map(Box::new),
@@ -321,11 +350,11 @@ parser!{
     pub fn add['a, Input]()(Input) -> Expr<'a>
     where [ Input: Stream<Item = Token<'a>> ]
     {
-        let binary = satisfy_map(|t| match t {
+        let binary = lex(satisfy_map(|t| match t {
             Token::Keyword(Reserved::Add) => Some(BinaryOp::Add),
             Token::Keyword(Reserved::Sub) => Some(BinaryOp::Sub),
             _ => None
-        }).map(|op| move |left, right| Expr::Binary {
+        })).map(|op| move |left, right| Expr::Binary {
             left: Box::new(left),
             operation: op,
             right: Box::new(right)
@@ -339,33 +368,17 @@ parser!{
     pub fn mult['a, Input]()(Input) -> Expr<'a>
     where [ Input: Stream<Item = Token<'a>> ]
     {
-        let binary = satisfy_map(|t| match t {
+        let binary = lex(satisfy_map(|t| match t {
             Token::Keyword(Reserved::Mult) => Some(BinaryOp::Mult),
             Token::Keyword(Reserved::Div) => Some(BinaryOp::Div),
             Token::Keyword(Reserved::Mod) => Some(BinaryOp::Mod),
             _ => None
-        }).map(|op| move |left, right| Expr::Binary {
+        })).map(|op| move |left, right| Expr::Binary {
             left: Box::new(left),
             operation: op,
             right: Box::new(right)
         });
-        chainl1(pown(), binary)
-    }
-}
-
-parser!{
-    pub fn pown['a, Input]()(Input) -> Expr<'a>
-    where [ Input: Stream<Item = Token<'a>> ]
-    {
-        let binary = satisfy_map(|t| match t {
-            Token::Keyword(Reserved::Exp) => Some(BinaryOp::Exp),
-            _ => None
-        }).map(|op| move |left, right| Expr::Binary {
-            left: Box::new(left),
-            operation: op,
-            right: Box::new(right)
-        });
-        chainr1(nega(), binary)
+        chainl1(nega(), binary)
     }
 }
 
@@ -381,10 +394,11 @@ parser!{
         let unary = struct_parser!{
             Unary {
                 operation: operation,
+                _: space(),
                 child: atom().map(Box::new)
             }
         };
-        choice((unary, atom()))
+        choice((attempt(unary), atom()))
     }
 }
 
@@ -392,18 +406,18 @@ parser!{
     pub fn atom['a, Input]()(Input) -> Expr<'a>
     where [ Input: Stream<Item = Token<'a>> ]
     {
-        let variable = satisfy_map(|t| match t {
+        let variable = lex(satisfy_map(|t| match t {
             Token::Name(name) => Some(Expr::Var(name)),
             _ => None
-        });
-        let literal = satisfy_map(|t| match t {
+        }));
+        let literal = lex(satisfy_map(|t| match t {
             Token::Lit(lit) => Some(Expr::Lit(lit)),
             _ => None
-        });
+        }));
         let nested = between(
-            token(Token::Paren(Direction::Left)),
-            token(Token::Paren(Direction::Right)),
-            expn()
+            lex(token(Token::Paren(Direction::Left))),
+            lex(token(Token::Paren(Direction::Right))),
+            lex(expn())
         );
         choice!(variable, literal, nested)
     }

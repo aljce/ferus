@@ -1,7 +1,7 @@
 #[macro_use]
 extern crate combine;
 
-use combine::{Parser};
+use combine::*;
 
 use std::thread;
 use std::fs::File;
@@ -14,8 +14,10 @@ pub mod lexer;
 
 pub mod expr;
 
+pub mod eval;
+
 use lexer::{Tokenizer};
-use expr::{expn};
+use expr::{prog};
 
 pub fn repl() {
     let prompt = "> ";
@@ -36,14 +38,17 @@ pub fn repl() {
         match readline {
             Ok(ref line) if line.is_empty() => {}
             Ok(ref line) => {
+                rl.add_history_entry(line);
                 let tokenizer = Tokenizer::new(line);
-                match expn().parse(tokenizer) {
+                match prog().easy_parse(tokenizer) {
                     Err(err) => {
                         eprintln!("ERROR: could not parse ({}) because {}", line, err)
                     },
                     Ok((expr, _)) => {
-                        rl.add_history_entry(line);
-                        println!("{}", expr.pretty());
+                        match expr.eval() {
+                            Ok(evaled) => println!("{}", evaled.pretty()),
+                            Err(err) => eprintln!("{:?}", err),
+                        }
                     }
                 }
             }
