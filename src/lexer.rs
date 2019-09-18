@@ -2,12 +2,14 @@ use std::fmt;
 use combine::{
     EasyParser, Stream, RangeStream,
     stream::{StreamOnce, Positioned, ResetStream},
-    choice, eof, satisfy_map,
+    choice, eof, satisfy_map, attempt,
+    parser::char::{string},
     parser::range::{take_while1},
 };
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Copy, Clone, Hash)]
 pub enum Literal<'a> {
+    Unit,
     Integer(i64),
     Boolean(bool),
     String(&'a str),
@@ -17,6 +19,7 @@ impl<'a> fmt::Display for Literal<'a> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         use Literal::*;
         match *self {
+            Unit => write!(f, "()"),
             Integer(i) => write!(f, "{}", i),
             String(s)  => write!(f, "{}", s),
             Boolean(b) => write!(f, "{}", b)
@@ -74,6 +77,7 @@ pub enum Reserved {
     Arrow,
     Fst,
     Snd,
+    Print,
 }
 
 impl fmt::Display for Reserved {
@@ -101,6 +105,7 @@ impl fmt::Display for Reserved {
             Arrow => "=>",
             Fst => "fst",
             Snd => "snd",
+            Print => "print",
         };
         write!(f, "{}", name)
     }
@@ -140,6 +145,15 @@ parser!{
 }
 
 parser!{
+    pub fn unit['a, Input]()(Input) -> Literal<'a>
+    where [ Input: RangeStream<Item = char, Range = &'a str> ]
+    {
+        use Literal::*;
+        string("()").map(|_| Unit)
+    }
+}
+
+parser!{
     pub fn number['a, Input]()(Input) -> Literal<'a>
     where [ Input: RangeStream<Item = char, Range = &'a str> ]
     {
@@ -172,6 +186,7 @@ parser!{
             "fn" => Keyword(Fn),
             "fst" => Keyword(Fst),
             "snd" => Keyword(Snd),
+            "print" => Keyword(Print),
             "true" => Lit(Boolean(true)),
             "false" => Lit(Boolean(false)),
             _ => Name(tok)
@@ -224,6 +239,7 @@ parser!{
         choice!(
             eof().map(|_| EndOfFile),
             spaces(),
+            attempt(unit()).map(Lit),
             delimiter().map(Delim),
             number().map(Lit),
             alphabetic(),

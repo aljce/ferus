@@ -12,6 +12,7 @@ pub struct Closure<'a> {
 
 #[derive(Debug, Clone)]
 pub enum Value<'a> {
+    Unit,
     Integer(i64),
     Boolean(bool),
     String(&'a str),
@@ -23,6 +24,7 @@ impl<'a> fmt::Display for Value<'a> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         use Value::*;
         match *self {
+            Unit => write!(f, "()"),
             Integer(i) => write!(f, "{}", i),
             Boolean(b) => write!(f, "{}", b),
             String(s) => write!(f, "{}", s),
@@ -39,6 +41,14 @@ impl<'a> fmt::Display for Value<'a> {
 }
 
 impl<'a> Value<'a> {
+    fn unit(&self) -> Result<(), Error<'a>> {
+        use Value::*;
+        use Error::*;
+        match *self {
+            Unit => Ok(()),
+            _ => Err(TypeError{ expr: self.clone(), should: Type::Unit })
+        }
+    }
     fn boolean(&self) -> Result<bool, Error<'a>> {
         use Value::*;
         use Error::*;
@@ -75,6 +85,7 @@ impl<'a> Value<'a> {
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Hash)]
 pub enum Type {
+    Unit,
     Boolean,
     Integer,
     Function,
@@ -91,6 +102,7 @@ impl<'a> Literal<'a> {
     pub fn into_value(&self) -> Value<'a> {
         use Value::*;
         match *self {
+            Literal::Unit      => Unit,
             Literal::Integer(i) => Integer(i),
             Literal::Boolean(b) => Boolean(b),
             Literal::String(s)  => String(s),
@@ -162,6 +174,11 @@ impl<'a> Expr<'a> {
                     let tuple = child.eval_ctx(env1)?.tuple()?;
                     Ok(tuple.1)
                 },
+                Print => {
+                    let val = child.eval_ctx(env1)?;
+                    println!("{}", val);
+                    Ok(Unit)
+                },
             },
             Binary{ left, operation, right } => match operation {
                 Add => {
@@ -226,13 +243,19 @@ impl<'a> Expr<'a> {
                 env1.extend(name, binder_val, |env2| body.eval_ctx(env2))
             },
             Lambda{ name, body } => {
-                Ok(Function(Closure{ formal: name, body: *body.clone(), context: env1.clone() })) // TODO
+                Ok(Function(Closure{ formal: name, body: *body.clone(), context: env1.clone() }))
+                // TODO do less copying
             },
             App{ left, right } => {
                 let Closure{ formal, body, mut context } = left.eval_ctx(env1)?.function()?;
                 let right_val = right.eval_ctx(env1)?;
                 context.extend(formal, right_val, |env2| body.eval_ctx(env2))
-            }
+            },
+            Seq{ left, right } => {
+                left.eval_ctx(env1)?.unit()?;
+                right.eval_ctx(env1)?.unit()?;
+                Ok(Unit)
+            },
         }
     }
     pub fn eval(&self) -> Result<Value<'a>, Error<'a>> {

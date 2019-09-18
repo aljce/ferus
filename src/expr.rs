@@ -14,6 +14,7 @@ pub enum UnaryOp {
     Not,
     Fst,
     Snd,
+    Print,
 }
 
 impl UnaryOp {
@@ -23,6 +24,7 @@ impl UnaryOp {
             Not => 9,
             Fst => 9,
             Snd => 9,
+            Print => 9,
         }
     }
 }
@@ -34,6 +36,7 @@ impl fmt::Display for UnaryOp {
             Not => "not",
             Fst => "fst",
             Snd => "snd",
+            Print => "print",
         };
         write!(f, "{}", name)
     }
@@ -122,6 +125,10 @@ pub enum Expr<'a> {
         left: Box<Expr<'a>>,
         right: Box<Expr<'a>>,
     },
+    Seq {
+        left: Box<Expr<'a>>,
+        right: Box<Expr<'a>>,
+    },
 }
 
 impl<'a> fmt::Display for Expr<'a> {
@@ -195,6 +202,11 @@ impl<'a> fmt::Display for Expr<'a> {
                         draw(g, right, 10)
                     })
                 },
+                Seq{ left, right } => parens(f, 0, prec, |g| {
+                    draw(g, left, 0)?;
+                    write!(g, " ; ")?;
+                    draw(g, right, 0)
+                }),
             }
         }
         draw(f, self, 0)
@@ -250,9 +262,10 @@ parser!{
 // <cmpn> ::= <addn> = <addn> | <addn> < <addn> | <addn>
 // <addn> ::= <addn> + <mult> | <addn> - <mult> | <mult>
 // <mult> ::= <mult> * <unar> | <mult> div <unar> | <mult> mod <unar> | <unar>
-// <unar> ::= not <appn> | fst <appn> | snd <appn> | <appn>
+// <unar> ::= not <appn> | fst <appn> | snd <appn> | print <appn>
 // <appn> ::= <appn> <atom> | <atom>
-// <atom> ::= <name> | <numn> | true | false | ( <expn> ) | ( <expn> , <expn> )
+// <atom> ::= <name> | <numn> | true | false | ( <seqn> ) | ( <expn> , <expn> )
+// <seqn> ::= <seqn> ; <expn> | <expn>
 // <name> ::= a | b | c | ...
 // <numn> ::= 0 | 1 | 2 | ...
 parser!{
@@ -405,6 +418,7 @@ parser!{
             Token::Keyword(Reserved::Not) => Some(UnaryOp::Not),
             Token::Keyword(Reserved::Fst) => Some(UnaryOp::Fst),
             Token::Keyword(Reserved::Snd) => Some(UnaryOp::Snd),
+            Token::Keyword(Reserved::Print) => Some(UnaryOp::Print),
             _ => None
         });
         let unary = struct_parser!{
@@ -431,6 +445,20 @@ parser!{
 }
 
 parser!{
+    pub fn seqn['a, Input]()(Input) -> Expr<'a>
+    where [ Input: Stream<Item = Token<'a>> ]
+    {
+        let binary = satisfy(|t| {
+            t == Token::Delim(Delimiter::Semicolon)
+        }).map(|_| move |left, right| Expr::Seq {
+            left: Box::new(left),
+            right: Box::new(right)
+        });
+        chainl1(expn(), binary)
+    }
+}
+
+parser!{
     pub fn atom['a, Input]()(Input) -> Expr<'a>
     where [ Input: Stream<Item = Token<'a>> ]
     {
@@ -442,7 +470,7 @@ parser!{
             _ => None
         });
         let paren = |dir| token(Token::Delim(Delimiter::Paren(dir)));
-        let nested = between(paren(Left), paren(Right), lex(expn()));
+        let sequence = between(paren(Left), paren(Right), lex(seqn()));
         let tuple = struct_parser!{
             Tuple {
                 _: paren(Left),
@@ -452,7 +480,7 @@ parser!{
                 _: paren(Right),
             }
         };
-        lex(choice!(variable, literal, attempt(nested), tuple))
+        lex(choice!(variable, literal, attempt(sequence), tuple))
     }
 }
 
