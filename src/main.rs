@@ -11,10 +11,7 @@ use rustyline::{Config, Editor, EditMode};
 use rustyline::error::ReadlineError;
 
 pub mod lexer;
-
 pub mod expr;
-
-pub mod eval;
 
 use lexer::{Tokenizer};
 use expr::{prog};
@@ -46,7 +43,7 @@ pub fn repl() {
                     },
                     Ok((expr, _)) => {
                         match expr.eval() {
-                            Ok(evaled) => println!("{}", evaled.pretty()),
+                            Ok(value) => println!("{}", value),
                             Err(err) => eprintln!("{:?}", err),
                         }
                     }

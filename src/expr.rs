@@ -1,15 +1,30 @@
-use std::iter;
 use std::fmt;
 use combine::{
     Parser, Stream, satisfy, satisfy_map, choice, between,
-    chainl1, attempt, optional
+    chainl1, attempt, optional, value,
 };
 
-use crate::lexer::{Literal, Direction, Reserved, Token};
+pub mod pretty;
+pub mod eval;
+
+use crate::lexer::{Literal, Direction, Delimiter, Reserved, Token};
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Copy, Clone, Hash)]
 pub enum UnaryOp {
-    Not
+    Not,
+    Fst,
+    Snd,
+}
+
+impl UnaryOp {
+    fn precedence(self) -> usize {
+        use UnaryOp::*;
+        match self {
+            Not => 9,
+            Fst => 9,
+            Snd => 9,
+        }
+    }
 }
 
 impl fmt::Display for UnaryOp {
@@ -17,6 +32,8 @@ impl fmt::Display for UnaryOp {
         use UnaryOp::*;
         let name = match *self {
             Not => "not",
+            Fst => "fst",
+            Snd => "snd",
         };
         write!(f, "{}", name)
     }
@@ -39,17 +56,34 @@ impl fmt::Display for BinaryOp {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         use BinaryOp::*;
         let name = match *self {
-            Add => "(+)",
-            Sub => "(-)",
-            Mult => "(*)",
+            Add => "+",
+            Sub => "-",
+            Mult => "*",
             Div => "div",
             Mod => "mod",
-            Equal => "(=)",
-            LessThan => "(<)",
+            Equal => "=",
+            LessThan => "<",
             OrElse => "orelse",
             AndAlso => "andalso",
         };
         write!(f, "{}", name)
+    }
+}
+
+impl BinaryOp {
+    fn precedence(self) -> usize {
+        use BinaryOp::*;
+        match self {
+            Add => 4,
+            Sub => 4,
+            Mult => 5,
+            Div => 5,
+            Mod => 5,
+            Equal => 3,
+            LessThan => 3,
+            OrElse => 1,
+            AndAlso => 2,
+        }
     }
 }
 
@@ -59,144 +93,108 @@ pub enum Expr<'a> {
     Lit(Literal<'a>),
     Unary {
         operation: UnaryOp,
-        child: Box<Expr<'a>>
+        child: Box<Expr<'a>>,
     },
     Binary {
         left: Box<Expr<'a>>,
         operation: BinaryOp,
-        right: Box<Expr<'a>>
+        right: Box<Expr<'a>>,
     },
     IfThenElse {
         condition: Box<Expr<'a>>,
         if_branch: Box<Expr<'a>>,
-        else_branch: Box<Expr<'a>>
+        else_branch: Box<Expr<'a>>,
+    },
+    Tuple {
+        left: Box<Expr<'a>>,
+        right: Box<Expr<'a>>,
     },
     Let {
         name: &'a str,
         binder: Box<Expr<'a>>,
-        child: Box<Expr<'a>>
+        body: Box<Expr<'a>>,
     },
-}
-
-impl<'a> Expr<'a> {
-    pub fn pretty(&self) -> String {
-        fn draw<'a>(expr: &Expr<'a>, lines: &mut Vec<String>, cur: usize) -> usize {
-            use Expr::*;
-            match expr {
-                Var(name) => {
-                    lines.push(format!("{}", name));
-                    cur + 1
-                },
-                Lit(lit) => {
-                    lines.push(format!("{}", lit));
-                    cur + 1
-                },
-                Unary{ operation, child } => {
-                    lines.push(format!("{}", operation));
-                    lines.push("│  ".to_string());
-                    let bottom = draw(child, lines, cur + 2);
-                    lines[cur + 2].insert_str(0, "└──");
-                    for y in cur + 3 .. bottom {
-                        lines[y].insert_str(0, "   ");
-                    }
-                    bottom
-                },
-                Binary{ left, operation, right } => {
-                    lines.push(format!("{}", operation));
-                    lines.push("│  ".to_string());
-                    let top = draw(left, lines, cur + 2);
-                    lines[cur + 2].insert_str(0, "├──");
-                    for y in cur + 3 .. top {
-                        lines[y].insert_str(0, "│  ");
-                    }
-                    lines.push("│  ".to_string());
-                    let bottom = draw(right, lines, top + 1);
-                    lines[top + 1].insert_str(0, "└──");
-                    for y in top + 2 .. bottom {
-                        lines[y].insert_str(0, "   ");
-                    }
-                    bottom
-                },
-                IfThenElse{ condition, if_branch, else_branch } => {
-                    lines.push("if".to_string());
-                    lines.push("│  ".to_string());
-                    let top = draw(condition, lines, cur + 2);
-                    lines[cur + 2].insert_str(0, "├──");
-                    for y in cur + 3 .. top {
-                        lines[y].insert_str(0, "│  ");
-                    }
-                    lines.push("│  ".to_string());
-                    let middle = draw(if_branch, lines, top + 1);
-                    lines[top + 1].insert_str(0, "├──");
-                    for y in top + 2 .. middle {
-                        lines[y].insert_str(0, "│  ");
-                    }
-                    lines.push("│  ".to_string());
-                    let bottom = draw(else_branch, lines, middle + 1);
-                    lines[middle + 1].insert_str(0, "└──");
-                    for y in middle + 2 .. bottom {
-                        lines[y].insert_str(0, "   ");
-                    }
-                    bottom
-                },
-                Let{ name, binder, child } => {
-                    lines.push(format!("let {}=", name));
-                    lines.push("│  ".to_string());
-                    let top = draw(binder, lines, cur + 2);
-                    lines[cur + 2].insert_str(0, "├──");
-                    for y in cur + 3 .. top {
-                        lines[y].insert_str(0, "│  ");
-                    }
-                    lines.push("│  ".to_string());
-                    let bottom = draw(child, lines, top + 1);
-                    lines[top + 1].insert_str(0, "└──");
-                    for y in top + 2 .. bottom {
-                        lines[y].insert_str(0, "   ");
-                    }
-                    bottom
-                }
-            }
-        }
-        let mut lines = vec![];
-        draw(self, &mut lines, 0);
-        lines.join("\n")
-    }
+    Lambda {
+        name: &'a str,
+        body: Box<Expr<'a>>,
+    },
+    App {
+        left: Box<Expr<'a>>,
+        right: Box<Expr<'a>>,
+    },
 }
 
 impl<'a> fmt::Display for Expr<'a> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        fn padding(indent: usize) -> String {
-            iter::repeat(' ').take(indent).collect()
-        }
-        fn draw_tree<'a>(f: &mut fmt::Formatter, expr: &Expr<'a>, indent: usize) -> fmt::Result {
-            use Expr::*;
-            match expr {
-                Var(name) => write!(f, "{}{}\n", padding(indent), name),
-                Lit(lit) => write!(f, "{}{}\n", padding(indent), lit),
-                Unary{ operation, child } => {
-                    write!(f, "{}{}\n", padding(indent), operation)?;
-                    draw_tree(f, child, indent + 3)
-                },
-                Binary{ left, operation, right } => {
-                    write!(f, "{}{}\n", padding(indent), operation)?;
-                    draw_tree(f, left, indent + 3)?;
-                    draw_tree(f, right, indent + 3)
-                }
-                IfThenElse{ condition, if_branch, else_branch } => {
-                    write!(f, "{}if then else\n", padding(indent))?;
-                    draw_tree(f, condition, indent + 3)?;
-                    draw_tree(f, if_branch, indent + 3)?;
-                    draw_tree(f, else_branch, indent + 3)
-                }
-                Let{ name, binder, child } => {
-                    write!(f, "{}let\n", padding(indent))?;
-                    write!(f, "{}{}\n", padding(indent + 3), name)?;
-                    draw_tree(f, binder, indent + 3)?;
-                    draw_tree(f, child, indent + 3)
-                }
+        fn parens<F>(f: &mut fmt::Formatter, inner: usize, outer: usize, cb: F) -> fmt::Result
+        where F: FnOnce(&mut fmt::Formatter) -> fmt::Result
+        {
+            if inner < outer {
+                write!(f, "(")?;
+                cb(f)?;
+                write!(f, ")")
+            } else {
+                cb(f)
             }
         }
-        draw_tree(f, self, 0)
+        fn draw<'a>(f: &mut fmt::Formatter, expr: &Expr<'a>, prec: usize) -> fmt::Result {
+            use Expr::*;
+            match expr {
+                Var(name) => write!(f, "{}", name),
+                Lit(lit) => write!(f, "{}", lit),
+                Unary{ operation, child } => {
+                    let op_prec = operation.precedence();
+                    parens(f, op_prec, prec, |g| {
+                        write!(g, "{} ", operation)?;
+                        draw(g, child, op_prec)
+                    })
+                },
+                Binary{ left, operation, right } => {
+                    let op_prec = operation.precedence();
+                    parens(f, op_prec, prec, |g| {
+                        draw(g, left, op_prec)?;
+                        write!(g, " {} ", operation)?;
+                        draw(g, right, op_prec)
+                    })
+                },
+                IfThenElse{ condition, if_branch, else_branch } => {
+                    parens(f, 0, prec, |g| {
+                        write!(g, "if ")?;
+                        draw(g, condition, 0)?;
+                        write!(g, " then ")?;
+                        draw(g, if_branch, 0)?;
+                        write!(g, " else ")?;
+                        draw(g, else_branch, 0)
+                    })
+                },
+                Tuple{..} => {
+                    panic!()
+                },
+                Let{ name, binder, body } => {
+                    parens(f, 0, prec, |g| {
+                        write!(g, "let val {} = ", name)?;
+                        draw(g, binder, 0)?;
+                        write!(g, " in ")?;
+                        draw(g, body, 0)?;
+                        write!(g, " end")
+                    })
+                },
+                Lambda{ name, body } => {
+                    parens(f, 0, prec, |g| {
+                        write!(g, "fn {} => ", name)?;
+                        draw(g, body, 0)
+                    })
+                },
+                App{ left, right } => {
+                    parens(f, 9, prec, |g| {
+                        draw(g, left, 10)?;
+                        write!(g, " ")?;
+                        draw(g, right, 10)
+                    })
+                },
+            }
+        }
+        draw(f, self, 0)
     }
 }
 
@@ -237,19 +235,20 @@ parser!{
     pub fn lex['a, Input, P](f: P)(Input) -> P::Output
     where [ Input: Stream<Item = Token<'a>>, P: Parser<Input> ]
     {
-        // (f, space()).map(|(v, _)| v)
         between(optional(space()), optional(space()), f)
     }
 }
 
 // <prog> ::= <expn>EOF
-// <expn> ::= let val <name> = <expn> in <expn> end | if <expn> then <expn> else <expn> | <disj>
+// <expn> ::= let val<name> = <expn> in <expn> end | if <expn> then <expn> else <expn>
+// <expn> ::= fn <name> => <expn> | <disj>
 // <disj> ::= <disj> orelse <conj> | <conj>
 // <conj> ::= <conj> andalso <cmpn> | <cmpn>
 // <cmpn> ::= <addn> = <addn> | <addn> < <addn> | <addn>
 // <addn> ::= <addn> + <mult> | <addn> - <mult> | <mult>
 // <mult> ::= <mult> * <nega> | <mult> div <nega> | <mult> mod <nega> | <nega>
-// <nega> ::= not <atom> | <atom>
+// <nega> ::= not <appn> | <appn>
+// <appn> ::= <appn> <atom> | <atom>
 // <atom> ::= <name> | <numn> | true | false | ( <expn> )
 // <name> ::= a | b | c | ...
 // <numn> ::= 0 | 1 | 2 | ...
@@ -269,27 +268,39 @@ parser!{
         use Expr::*;
         let let_val = struct_parser!{
             Let {
-                _: lex(token(Keyword(Reserved::Let))),
-                _: lex(token(Keyword(Reserved::Val))),
-                name: lex(name()),
+                _: token(Keyword(Reserved::Let)),
+                _: space(),
+                _: token(Keyword(Reserved::Val)),
+                _: space(),
+                name: name(),
                 _: lex(token(Keyword(Reserved::Equal))),
-                binder: lex(expn().map(Box::new)),
-                _: lex(token(Keyword(Reserved::In))),
-                child: lex(expn().map(Box::new)),
+                binder: expn().map(Box::new),
+                _: token(Keyword(Reserved::In)),
+                body: expn().map(Box::new),
                 _: token(Keyword(Reserved::End)),
             }
         };
         let if_then_else = struct_parser!{
             IfThenElse {
-                _: lex(token(Keyword(Reserved::If))),
-                condition: lex(expn().map(Box::new)),
-                _: lex(token(Keyword(Reserved::Then))),
-                if_branch: lex(expn().map(Box::new)),
-                _: lex(token(Keyword(Reserved::Else))),
+                _: token(Keyword(Reserved::If)),
+                condition: expn().map(Box::new),
+                _: token(Keyword(Reserved::Then)),
+                if_branch: expn().map(Box::new),
+                _: token(Keyword(Reserved::Else)),
                 else_branch: expn().map(Box::new)
             }
         };
-        choice((let_val, if_then_else, disj()))
+        let lambda = struct_parser!{
+            Lambda {
+                _: token(Keyword(Reserved::Fn)),
+                _: space(),
+                name: name(),
+                _: space(),
+                _: token(Keyword(Reserved::Arrow)),
+                body: expn().map(Box::new),
+            }
+        };
+        lex(choice!(let_val, if_then_else, lambda, disj()))
     }
 }
 
@@ -313,10 +324,10 @@ parser!{
     pub fn conj['a, Input]()(Input) -> Expr<'a>
     where [ Input: Stream<Item = Token<'a>> ]
     {
-        let binary = lex(satisfy_map(|t| match t {
+        let binary = satisfy_map(|t| match t {
             Token::Keyword(Reserved::AndAlso) => Some(BinaryOp::AndAlso),
             _ => None
-        })).map(|op| move |left, right| Expr::Binary {
+        }).map(|op| move |left, right| Expr::Binary {
             left: Box::new(left),
             operation: op,
             right: Box::new(right)
@@ -330,11 +341,11 @@ parser!{
     where [ Input: Stream<Item = Token<'a>> ]
     {
         use Expr::*;
-        let comparison = lex(satisfy_map(|t| match t {
+        let comparison = satisfy_map(|t| match t {
             Token::Keyword(Reserved::Equal) => Some(BinaryOp::Equal),
             Token::Keyword(Reserved::LessThan) => Some(BinaryOp::LessThan),
             _ => None
-        }));
+        });
         let binary = struct_parser!{
             Binary {
                 left: add().map(Box::new),
@@ -342,7 +353,7 @@ parser!{
                 right: add().map(Box::new),
             }
         };
-        choice((attempt(binary), add()))
+        choice!(attempt(binary), add())
     }
 }
 
@@ -350,11 +361,11 @@ parser!{
     pub fn add['a, Input]()(Input) -> Expr<'a>
     where [ Input: Stream<Item = Token<'a>> ]
     {
-        let binary = lex(satisfy_map(|t| match t {
+        let binary = satisfy_map(|t| match t {
             Token::Keyword(Reserved::Add) => Some(BinaryOp::Add),
             Token::Keyword(Reserved::Sub) => Some(BinaryOp::Sub),
             _ => None
-        })).map(|op| move |left, right| Expr::Binary {
+        }).map(|op| move |left, right| Expr::Binary {
             left: Box::new(left),
             operation: op,
             right: Box::new(right)
@@ -368,12 +379,12 @@ parser!{
     pub fn mult['a, Input]()(Input) -> Expr<'a>
     where [ Input: Stream<Item = Token<'a>> ]
     {
-        let binary = lex(satisfy_map(|t| match t {
+        let binary = satisfy_map(|t| match t {
             Token::Keyword(Reserved::Mult) => Some(BinaryOp::Mult),
             Token::Keyword(Reserved::Div) => Some(BinaryOp::Div),
             Token::Keyword(Reserved::Mod) => Some(BinaryOp::Mod),
             _ => None
-        })).map(|op| move |left, right| Expr::Binary {
+        }).map(|op| move |left, right| Expr::Binary {
             left: Box::new(left),
             operation: op,
             right: Box::new(right)
@@ -395,10 +406,22 @@ parser!{
             Unary {
                 operation: operation,
                 _: space(),
-                child: atom().map(Box::new)
+                child: appn().map(Box::new)
             }
         };
-        choice((attempt(unary), atom()))
+        choice!(attempt(unary), appn())
+    }
+}
+
+parser!{
+    pub fn appn['a, Input]()(Input) -> Expr<'a>
+    where [ Input: Stream<Item = Token<'a>> ]
+    {
+        let binary = value(|left, right| Expr::App {
+            left: Box::new(left),
+            right: Box::new(right)
+        });
+        chainl1(atom(), binary).message("function application")
     }
 }
 
@@ -406,19 +429,47 @@ parser!{
     pub fn atom['a, Input]()(Input) -> Expr<'a>
     where [ Input: Stream<Item = Token<'a>> ]
     {
-        let variable = lex(satisfy_map(|t| match t {
-            Token::Name(name) => Some(Expr::Var(name)),
-            _ => None
-        }));
-        let literal = lex(satisfy_map(|t| match t {
+        let variable = name().map(Expr::Var);
+        let literal = satisfy_map(|t| match t {
             Token::Lit(lit) => Some(Expr::Lit(lit)),
             _ => None
-        }));
+        });
         let nested = between(
-            lex(token(Token::Paren(Direction::Left))),
-            lex(token(Token::Paren(Direction::Right))),
+            token(Token::Delim(Delimiter::Paren(Direction::Left))),
+            token(Token::Delim(Delimiter::Paren(Direction::Right))),
             lex(expn())
         );
-        choice!(variable, literal, nested)
+       lex(choice!(variable, literal, nested))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::lexer::{Tokenizer};
+
+    #[test]
+    fn parse_success_unit() {
+        let tests = vec![
+            "1+2*3<4 andalso true",
+            "let val x = let val a = 2 in fn b => a end in let val y=1 in fn z => x end end"
+        ];
+        for test in tests {
+            let res = prog().parse(Tokenizer::new(test));
+            assert!(res.is_ok());
+        }
+    }
+
+    #[test]
+    fn parse_roundtrip_unit() {
+        let tests = vec![
+            "(1 + 2) * 3",
+            "let val x = 1 in let val y = 2 in x + y end end",
+            "fn x => fn y => x (x (x y))"
+        ];
+        for test in tests {
+            let res = prog().parse(Tokenizer::new(test));
+            assert_eq!(Ok(test.to_string()), res.map(|(e, _)| e.to_string()))
+        }
     }
 }

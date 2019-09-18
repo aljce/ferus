@@ -1,18 +1,16 @@
 use std::fmt;
 use combine::{
-    EasyParser, ParseError, Stream, RangeStream,
+    EasyParser, Stream, RangeStream,
     stream::{StreamOnce, Positioned, ResetStream},
-    choice, attempt, eof,
-    parser::char::{char, string},
+    choice, eof, satisfy_map,
     parser::range::{take_while1},
-    easy::{Errors},
 };
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Copy, Clone, Hash)]
 pub enum Literal<'a> {
     Integer(i64),
-    String(&'a str),
     Boolean(bool),
+    String(&'a str),
 }
 
 impl<'a> fmt::Display for Literal<'a> {
@@ -30,6 +28,27 @@ impl<'a> fmt::Display for Literal<'a> {
 pub enum Direction {
     Left,
     Right,
+}
+
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Copy, Clone, Hash)]
+pub enum Delimiter {
+    Paren(Direction),
+    Semicolon,
+    Comma,
+}
+
+impl fmt::Display for Delimiter {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        use Direction::*;
+        use Delimiter::*;
+        let name = match *self {
+            Paren(Left) => "(",
+            Paren(Right) => ")",
+            Semicolon => ";",
+            Comma => ",",
+        };
+        write!(f, "{}", name)
+    }
 }
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Copy, Clone, Hash)]
@@ -77,7 +96,7 @@ impl fmt::Display for Reserved {
             In => "in",
             End => "end",
             Fn => "fn",
-            Arrow => "->",
+            Arrow => "=>",
         };
         write!(f, "{}", name)
     }
@@ -87,8 +106,8 @@ impl fmt::Display for Reserved {
 pub enum Token<'a> {
     Name(&'a str),
     Lit(Literal<'a>),
-    Paren(Direction),
     Space(usize),
+    Delim(Delimiter),
     Keyword(Reserved),
     EndOfFile,
 }
@@ -99,9 +118,8 @@ impl<'a> fmt::Display for Token<'a> {
         match *self {
             Name(name) => write!(f, "{}", name),
             Lit(lit) => write!(f, "{}", lit),
-            Paren(Direction::Left) => write!(f, "("),
-            Paren(Direction::Right) => write!(f, ")"),
             Space(c) => write!(f, "SPACE({})", c),
+            Delim(d) => write!(f, "{}", d),
             Keyword(res) => write!(f, "{}", res),
             EndOfFile => write!(f, "EOF"),
         }
@@ -127,42 +145,67 @@ parser!{
     }
 }
 
-const RESERVED: &'static str = " ()";
-
 parser!{
-    pub fn one['a, Input]()(Input) -> Token<'a>
+    pub fn alphabetic['a, Input]()(Input) -> Token<'a>
     where [ Input: RangeStream<Item = char, Range = &'a str> ]
     {
         use Reserved::*;
         use Literal::*;
         use Token::*;
-        let not_reserved = |c: char| RESERVED.chars().all(|r| r != c) && !c.is_digit(10);
-        take_while1(not_reserved).flat_map(|tok| match tok {
+        take_while1(|c: char| c.is_alphabetic()).map(|tok| match tok {
+            "div" => Keyword(Div),
+            "mod" => Keyword(Mod),
+            "orelse" => Keyword(OrElse),
+            "andalso" => Keyword(AndAlso),
+            "if" => Keyword(If),
+            "then" => Keyword(Then),
+            "else" => Keyword(Else),
+            "not" => Keyword(Not),
+            "let" => Keyword(Let),
+            "val" => Keyword(Val),
+            "in" => Keyword(In),
+            "end" => Keyword(End),
+            "fn" => Keyword(Fn),
+            "true" => Lit(Boolean(true)),
+            "false" => Lit(Boolean(false)),
+            _ => Name(tok)
+        })
+    }
+}
+
+parser!{
+    pub fn delimiter[Input]()(Input) -> Delimiter
+    where [ Input: Stream<Item = char> ]
+    {
+        use Direction::*;
+        use Delimiter::*;
+        satisfy_map(|c: char| match c {
+            '(' => Some(Paren(Left)),
+            ')' => Some(Paren(Right)),
+            ';' => Some(Semicolon),
+            ',' => Some(Comma),
+            _   => None,
+        })
+    }
+}
+
+const OPERATORS: &'static str = "+-*/<>=";
+
+parser!{
+    pub fn operator['a, Input]()(Input) -> Token<'a>
+    where [ Input: RangeStream<Item = char, Range = &'a str> ]
+    {
+        use Reserved::*;
+        use Token::*;
+        let is_operator = |c: char| OPERATORS.chars().any(|r| r == c);
+        take_while1(is_operator).flat_map(|tok| match tok {
             "+" => Ok(Keyword(Add)),
             "-" => Ok(Keyword(Sub)),
             "*" => Ok(Keyword(Mult)),
-            "div" => Ok(Keyword(Div)),
-            "mod" => Ok(Keyword(Mod)),
             "=" => Ok(Keyword(Equal)),
             "<" => Ok(Keyword(LessThan)),
-            "orelse" => Ok(Keyword(OrElse)),
-            "andalso" => Ok(Keyword(AndAlso)),
-            "if" => Ok(Keyword(If)),
-            "then" => Ok(Keyword(Then)),
-            "else" => Ok(Keyword(Else)),
-            "not" => Ok(Keyword(Not)),
-            "let" => Ok(Keyword(Let)),
-            "val" => Ok(Keyword(Val)),
-            "in" => Ok(Keyword(In)),
-            "end" => Ok(Keyword(End)),
-            "fn" => Ok(Keyword(Fn)),
-            "->" => Ok(Keyword(Arrow)),
-            "true" => Ok(Lit(Boolean(true))),
-            "false" => Ok(Lit(Boolean(false))),
-            _ if tok.chars().all(|c: char| c.is_alphabetic()) => Ok(Name(tok)),
-            _ => {
-                Err(panic!("lexing failure"))
-            }
+            "=>" => Ok(Keyword(Arrow)),
+            _ => panic!("lexing failure"), // TODO
         })
     }
 }
@@ -172,15 +215,14 @@ parser!{
     where [ Input: RangeStream<Item = char, Range = &'a str> ]
     {
         use Token::*;
-        use Direction::*;
-        choice((
+        choice!(
             eof().map(|_| EndOfFile),
             spaces(),
-            char('(').map(|_| Paren(Left)),
-            char(')').map(|_| Paren(Right)),
+            delimiter().map(Delim),
             number().map(Lit),
-            one(),
-        ))
+            alphabetic(),
+            operator()
+        )
     }
 }
 
@@ -209,7 +251,7 @@ impl<'a> StreamOnce for Tokenizer<'a> {
     fn uncons(&mut self) -> Result<Token<'a>, Self::Error> {
         match token().easy_parse(self.stream) {
             Ok((token, rest)) => {
-                println!("{:?} : {:?}", token, rest);
+                // println!("{:?} : {:?}", token, rest);
                 self.stream = rest;
                 self.current = self.size - rest.len();
                 Ok(token)
@@ -290,5 +332,19 @@ mod tests {
         ];
         assert_eq!(result, Ok(should))
     }
+
+    #[test]
+    fn tokenizer_unit3() {
+        let tokenizer = Tokenizer::new("let val x=1 in x<1 end");
+        let result = run_tokenizer(tokenizer);
+        let should = vec![
+            Keyword(Let), Space(1), Keyword(Val), Space(1),
+            Name("x"), Keyword(Equal), Lit(Integer(1)), Space(1),
+            Keyword(In), Space(1), Name("x"), Keyword(LessThan),
+            Lit(Integer(1)), Space(1), Keyword(End)
+        ];
+        assert_eq!(result, Ok(should))
+    }
+
 
 }
