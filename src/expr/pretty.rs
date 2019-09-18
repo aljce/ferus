@@ -61,9 +61,6 @@ impl<'a> Expr<'a> {
                     }
                     bottom
                 },
-                Tuple{..} => {
-                    panic!()
-                },
                 Let{ name, binder, body } => {
                     lines.push(format!("let {}=", name));
                     lines.push("│  ".to_string());
@@ -106,6 +103,7 @@ impl<'a> Expr<'a> {
                     }
                     bottom
                 },
+                _ => panic!("Pretty printing does not support new features"),
             }
         }
         let mut lines = vec![];

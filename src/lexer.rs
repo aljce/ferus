@@ -72,6 +72,8 @@ pub enum Reserved {
     End,
     Fn,
     Arrow,
+    Fst,
+    Snd,
 }
 
 impl fmt::Display for Reserved {
@@ -97,6 +99,8 @@ impl fmt::Display for Reserved {
             End => "end",
             Fn => "fn",
             Arrow => "=>",
+            Fst => "fst",
+            Snd => "snd",
         };
         write!(f, "{}", name)
     }
@@ -166,6 +170,8 @@ parser!{
             "in" => Keyword(In),
             "end" => Keyword(End),
             "fn" => Keyword(Fn),
+            "fst" => Keyword(Fst),
+            "snd" => Keyword(Snd),
             "true" => Lit(Boolean(true)),
             "false" => Lit(Boolean(false)),
             _ => Name(tok)

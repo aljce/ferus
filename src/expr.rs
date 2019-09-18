@@ -106,8 +106,8 @@ pub enum Expr<'a> {
         else_branch: Box<Expr<'a>>,
     },
     Tuple {
-        left: Box<Expr<'a>>,
-        right: Box<Expr<'a>>,
+        fst: Box<Expr<'a>>,
+        snd: Box<Expr<'a>>,
     },
     Let {
         name: &'a str,
@@ -167,8 +167,11 @@ impl<'a> fmt::Display for Expr<'a> {
                         draw(g, else_branch, 0)
                     })
                 },
-                Tuple{..} => {
-                    panic!()
+                Tuple{ fst, snd } => {
+                    write!(f, "(")?;
+                    draw(f, fst, 0)?;
+                    draw(f, snd, 0)?;
+                    write!(f, ")")
                 },
                 Let{ name, binder, body } => {
                     parens(f, 0, prec, |g| {
@@ -246,10 +249,10 @@ parser!{
 // <conj> ::= <conj> andalso <cmpn> | <cmpn>
 // <cmpn> ::= <addn> = <addn> | <addn> < <addn> | <addn>
 // <addn> ::= <addn> + <mult> | <addn> - <mult> | <mult>
-// <mult> ::= <mult> * <nega> | <mult> div <nega> | <mult> mod <nega> | <nega>
-// <nega> ::= not <appn> | <appn>
+// <mult> ::= <mult> * <unar> | <mult> div <unar> | <mult> mod <unar> | <unar>
+// <unar> ::= not <appn> | fst <appn> | snd <appn> | <appn>
 // <appn> ::= <appn> <atom> | <atom>
-// <atom> ::= <name> | <numn> | true | false | ( <expn> )
+// <atom> ::= <name> | <numn> | true | false | ( <expn> ) | ( <expn> , <expn> )
 // <name> ::= a | b | c | ...
 // <numn> ::= 0 | 1 | 2 | ...
 parser!{
@@ -400,6 +403,8 @@ parser!{
         use Expr::*;
         let operation = satisfy_map(|t| match t {
             Token::Keyword(Reserved::Not) => Some(UnaryOp::Not),
+            Token::Keyword(Reserved::Fst) => Some(UnaryOp::Fst),
+            Token::Keyword(Reserved::Snd) => Some(UnaryOp::Snd),
             _ => None
         });
         let unary = struct_parser!{
@@ -429,17 +434,25 @@ parser!{
     pub fn atom['a, Input]()(Input) -> Expr<'a>
     where [ Input: Stream<Item = Token<'a>> ]
     {
-        let variable = name().map(Expr::Var);
+        use Direction::*;
+        use Expr::*;
+        let variable = name().map(Var);
         let literal = satisfy_map(|t| match t {
-            Token::Lit(lit) => Some(Expr::Lit(lit)),
+            Token::Lit(lit) => Some(Lit(lit)),
             _ => None
         });
-        let nested = between(
-            token(Token::Delim(Delimiter::Paren(Direction::Left))),
-            token(Token::Delim(Delimiter::Paren(Direction::Right))),
-            lex(expn())
-        );
-       lex(choice!(variable, literal, nested))
+        let paren = |dir| token(Token::Delim(Delimiter::Paren(dir)));
+        let nested = between(paren(Left), paren(Right), lex(expn()));
+        let tuple = struct_parser!{
+            Tuple {
+                _: paren(Left),
+                fst: lex(expn().map(Box::new)),
+                _: token(Token::Delim(Delimiter::Comma)),
+                snd: lex(expn().map(Box::new)),
+                _: paren(Right),
+            }
+        };
+        lex(choice!(variable, literal, attempt(nested), tuple))
     }
 }
 
@@ -452,7 +465,8 @@ mod tests {
     fn parse_success_unit() {
         let tests = vec![
             "1+2*3<4 andalso true",
-            "let val x = let val a = 2 in fn b => a end in let val y=1 in fn z => x end end"
+            "let val x = let val a = 2 in fn b => a end in let val y=1 in fn z => x end end",
+            "fst (1+3,5)"
         ];
         for test in tests {
             let res = prog().parse(Tokenizer::new(test));

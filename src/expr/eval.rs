@@ -15,6 +15,7 @@ pub enum Value<'a> {
     Integer(i64),
     Boolean(bool),
     String(&'a str),
+    Tuple{ fst: Box<Value<'a>>, snd: Box<Value<'a>> },
     Function(Closure<'a>),
 }
 
@@ -25,6 +26,7 @@ impl<'a> fmt::Display for Value<'a> {
             Integer(i) => write!(f, "{}", i),
             Boolean(b) => write!(f, "{}", b),
             String(s) => write!(f, "{}", s),
+            Tuple{ ref fst, ref snd } => write!(f, "({}, {})", fst, snd),
             Function(Closure{ formal, ref body, ref context }) => {
                 if context.empty() {
                     write!(f, "fn {} => {}", formal, body)
@@ -53,6 +55,14 @@ impl<'a> Value<'a> {
             _ => Err(TypeError{ expr: self.clone(), should: Type::Integer })
         }
     }
+    fn tuple(&self) -> Result<(Value<'a>, Value<'a>), Error<'a>> {
+        use Value::*;
+        use Error::*;
+        match *self {
+            Tuple{ ref fst, ref snd } => Ok((*fst.clone(), *snd.clone())),
+            _ => Err(TypeError{ expr: self.clone(), should: Type::Tuple })
+        }
+    }
     fn function(&self) -> Result<Closure<'a>, Error<'a>> {
         use Value::*;
         use Error::*;
@@ -68,6 +78,7 @@ pub enum Type {
     Boolean,
     Integer,
     Function,
+    Tuple,
 }
 
 #[derive(Debug)]
@@ -144,10 +155,12 @@ impl<'a> Expr<'a> {
                     Ok(Boolean(!b))
                 },
                 Fst => {
-                    panic!()
+                    let tuple = child.eval_ctx(env1)?.tuple()?;
+                    Ok(tuple.0)
                 },
                 Snd => {
-                    panic!()
+                    let tuple = child.eval_ctx(env1)?.tuple()?;
+                    Ok(tuple.1)
                 },
             },
             Binary{ left, operation, right } => match operation {
@@ -203,8 +216,10 @@ impl<'a> Expr<'a> {
                     else_branch.eval_ctx(env1)
                 }
             },
-            Tuple{..} => {
-                panic!()
+            Expr::Tuple{ fst, snd } => {
+                let fst_val = fst.eval_ctx(env1)?;
+                let snd_val = snd.eval_ctx(env1)?;
+                Ok(Value::Tuple{ fst: Box::new(fst_val), snd: Box::new(snd_val) })
             },
             Let{ name, binder, body } => {
                 let binder_val = binder.eval_ctx(env1)?;
@@ -223,5 +238,30 @@ impl<'a> Expr<'a> {
     pub fn eval(&self) -> Result<Value<'a>, Error<'a>> {
         let mut env = Env::new();
         self.eval_ctx(&mut env)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use combine::Parser;
+    use crate::lexer::{Tokenizer};
+    use crate::expr::{prog};
+
+    #[test]
+    fn eval_unit() {
+        fn test(fun: &'static str, input: &'static str, output: i64) {
+            let y_comb = "fn f => (fn x => f (fn v => x x v)) (fn x => f (fn v => x x v))";
+            let expr_str = format!("({}) ({}) {}", y_comb, fun, input);
+            let (expr, _) = prog().parse(Tokenizer::new(expr_str.as_str())).unwrap();
+            let evaled = expr.eval().and_then(|v| v.integer()).unwrap();
+            assert_eq!(evaled, output)
+
+        }
+        let factorial = "fn factorial => fn n => if n = 0 then 1 else n * factorial (n - 1)";
+        test(factorial, "10", 3628800);
+        let fib = "fn fib => fn n => if n < 2 then n else fib (n - 1) + fib (n - 2)";
+        test(fib, "6", 8);
+        let power = "fn power => fn base => fn exp => if exp = 0 then 1 else base * power base (exp - 1)";
+        test(power, "2 3", 8);
     }
 }
