@@ -41,44 +41,44 @@ impl<'a> fmt::Display for Value<'a> {
 }
 
 impl<'a> Value<'a> {
-    fn unit(&self) -> Result<(), Error<'a>> {
+    fn unit(self) -> Result<(), Error<'a>> {
         use Value::*;
         use Error::*;
-        match *self {
+        match self {
             Unit => Ok(()),
-            _ => Err(TypeError{ expr: self.clone(), should: Type::Unit })
+            _ => Err(TypeError{ expr: self, should: Type::Unit })
         }
     }
-    fn boolean(&self) -> Result<bool, Error<'a>> {
+    fn boolean(self) -> Result<bool, Error<'a>> {
         use Value::*;
         use Error::*;
-        match *self {
+        match self {
             Boolean(b) => Ok(b),
-            _ => Err(TypeError{ expr: self.clone(), should: Type::Boolean })
+            _ => Err(TypeError{ expr: self, should: Type::Boolean })
         }
     }
-    fn integer(&self) -> Result<i64, Error<'a>> {
+    fn integer(self) -> Result<i64, Error<'a>> {
         use Value::*;
         use Error::*;
-        match *self {
+        match self {
             Integer(i) => Ok(i),
-            _ => Err(TypeError{ expr: self.clone(), should: Type::Integer })
+            _ => Err(TypeError{ expr: self, should: Type::Integer })
         }
     }
-    fn tuple(&self) -> Result<(Value<'a>, Value<'a>), Error<'a>> {
+    fn tuple(self) -> Result<(Value<'a>, Value<'a>), Error<'a>> {
         use Value::*;
         use Error::*;
-        match *self {
-            Tuple{ ref fst, ref snd } => Ok((*fst.clone(), *snd.clone())),
-            _ => Err(TypeError{ expr: self.clone(), should: Type::Tuple })
+        match self {
+            Tuple{ fst, snd } => Ok((*fst, *snd)),
+            _ => Err(TypeError{ expr: self, should: Type::Tuple })
         }
     }
-    fn function(&self) -> Result<Closure<'a>, Error<'a>> {
+    fn function(self) -> Result<Closure<'a>, Error<'a>> {
         use Value::*;
         use Error::*;
-        match *self {
-            Function(ref c) => Ok(c.clone()),
-            _ => Err(TypeError{ expr: self.clone(), should: Type::Function })
+        match self {
+            Function(c) => Ok(c),
+            _ => Err(TypeError{ expr: self, should: Type::Function })
         }
     }
 }
@@ -99,10 +99,10 @@ pub enum Error<'a> {
 }
 
 impl<'a> Literal<'a> {
-    pub fn into_value(&self) -> Value<'a> {
+    pub fn into_value(self) -> Value<'a> {
         use Value::*;
-        match *self {
-            Literal::Unit      => Unit,
+        match self {
+            Literal::Unit       => Unit,
             Literal::Integer(i) => Integer(i),
             Literal::Boolean(b) => Boolean(b),
             Literal::String(s)  => String(s),
@@ -141,15 +141,19 @@ impl<'a> Env<'a> {
     fn extend<A, F>(&mut self, name: &'a str, value: Value<'a>, cb: F) -> A
     where F: FnOnce(&mut Env<'a>) -> A
     {
-        self.context.insert(name, value); // TODO: variable shadowing
+        let old = self.context.insert(name, value);
         let res = cb(self);
-        self.context.remove(name);
+        // variable shadowing
+        match old {
+            Some(old_value) => self.context.insert(name, old_value),
+            None => self.context.remove(name),
+        };
         res
     }
 }
 
 impl<'a> Expr<'a> {
-    pub fn eval_ctx(&self, env1: &mut Env<'a>) -> Result<Value<'a>, Error<'a>> {
+    pub fn eval_ctx(self, env1: &mut Env<'a>) -> Result<Value<'a>, Error<'a>> {
         use UnaryOp::*;
         use BinaryOp::*;
         use Expr::*;
@@ -161,7 +165,7 @@ impl<'a> Expr<'a> {
                 None => Err(NotFound(name))
             },
             Lit(lit) => Ok(lit.into_value()),
-            Unary{ operation, child } =>  match operation {
+            Unary{ operation, child } => match operation {
                 Not => {
                     let b = child.eval_ctx(env1)?.boolean()?;
                     Ok(Boolean(!b))
@@ -243,8 +247,7 @@ impl<'a> Expr<'a> {
                 env1.extend(name, binder_val, |env2| body.eval_ctx(env2))
             },
             Lambda{ name, body } => {
-                Ok(Function(Closure{ formal: name, body: *body.clone(), context: env1.clone() }))
-                // TODO do less copying
+                Ok(Function(Closure{ formal: name, body: *body, context: env1.clone() }))
             },
             App{ left, right } => {
                 let Closure{ formal, body, mut context } = left.eval_ctx(env1)?.function()?;
@@ -253,12 +256,11 @@ impl<'a> Expr<'a> {
             },
             Seq{ left, right } => {
                 left.eval_ctx(env1)?.unit()?;
-                right.eval_ctx(env1)?.unit()?;
-                Ok(Unit)
+                right.eval_ctx(env1)
             },
         }
     }
-    pub fn eval(&self) -> Result<Value<'a>, Error<'a>> {
+    pub fn eval(self) -> Result<Value<'a>, Error<'a>> {
         let mut env = Env::new();
         self.eval_ctx(&mut env)
     }
@@ -278,13 +280,19 @@ mod tests {
             let (expr, _) = prog().parse(Tokenizer::new(expr_str.as_str())).unwrap();
             let evaled = expr.eval().and_then(|v| v.integer()).unwrap();
             assert_eq!(evaled, output)
-
         }
         let factorial = "fn factorial => fn n => if n = 0 then 1 else n * factorial (n - 1)";
         test(factorial, "10", 3628800);
         let fib = "fn fib => fn n => if n < 2 then n else fib (n - 1) + fib (n - 2)";
         test(fib, "6", 8);
-        let power = "fn power => fn base => fn exp => if exp = 0 then 1 else base * power base (exp - 1)";
-        test(power, "2 3", 8);
+        let power = r#"
+          fn pow => fn base => fn exp =>
+            if exp = 0
+              then 1
+              else if exp mod 2 = 0
+                     then pow (base * base) (exp div 2)
+                     else base * pow (base * base) (exp div 2)
+        "#;
+        test(power, "2 16", 2_i64.pow(16));
     }
 }

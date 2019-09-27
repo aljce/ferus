@@ -38,4 +38,5 @@ nixpkgs.stdenv.mkDerivation {
     nixpkgs.latest.rustChannels.nightly.rust
   ];
   RUST_BACKTRACE = if backtrace then 1 else 0;
+  RUST_MIN_STACK = 100 * 1024 * 1024;
 }

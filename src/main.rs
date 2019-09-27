@@ -3,7 +3,6 @@ extern crate combine;
 
 use combine::*;
 
-use std::thread;
 use std::fs::File;
 use std::io::Write;
 
@@ -63,13 +62,7 @@ pub fn repl() {
     rl.save_history(&history_file).unwrap();
 }
 
-const STACK_SIZE: usize = 100 * 1024 * 1024;
-
 fn main() {
-    let child = thread::Builder::new()
-        .stack_size(STACK_SIZE)
-        .spawn(repl)
-        .unwrap();
-    child.join().unwrap();
+    repl()
 }
 
