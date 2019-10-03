@@ -1,9 +1,14 @@
 #[macro_use]
 extern crate combine;
 
+use docopt::Docopt;
+use serde::Deserialize;
+
 use combine::*;
 
+use std::path::PathBuf;
 use std::fs::File;
+use std::io::Read;
 use std::io::Write;
 
 use rustyline::{Config, Editor, EditMode};
@@ -14,6 +19,37 @@ pub mod expr;
 
 use lexer::{Tokenizer};
 use expr::{prog};
+
+const USAGE: &'static str = "
+[ferus] an ocaml clone
+
+Usage:
+  ferus [options]
+  ferus [options] <source>
+
+Options:
+   -h, --help  Display this help message
+";
+
+#[derive(Debug, Deserialize)]
+struct Args {
+    arg_source: Option<PathBuf>
+}
+
+pub fn interpret<'a>(source: &'a str) {
+    let tokenizer = Tokenizer::new(source);
+    match prog().easy_parse(tokenizer) {
+        Err(err) => {
+            eprintln!("ERROR: could not parse ({}) because {}", source, err)
+        },
+        Ok((expr, _)) => {
+            match expr.eval() {
+                Ok(value) => println!("{}", value),
+                Err(err) => eprintln!("{:?}", err),
+            }
+        }
+    }
+}
 
 pub fn repl() {
     let prompt = "> ";
@@ -35,18 +71,7 @@ pub fn repl() {
             Ok(ref line) if line.is_empty() => {}
             Ok(ref line) => {
                 rl.add_history_entry(line);
-                let tokenizer = Tokenizer::new(line);
-                match prog().easy_parse(tokenizer) {
-                    Err(err) => {
-                        eprintln!("ERROR: could not parse ({}) because {}", line, err)
-                    },
-                    Ok((expr, _)) => {
-                        match expr.eval() {
-                            Ok(value) => println!("{}", value),
-                            Err(err) => eprintln!("{:?}", err),
-                        }
-                    }
-                }
+                interpret(line)
             }
             Err(ReadlineError::Interrupted) => {
                 eprintln!("CTRL-C");
@@ -62,7 +87,26 @@ pub fn repl() {
     rl.save_history(&history_file).unwrap();
 }
 
+pub fn file(source: PathBuf) {
+    match File::open(&source) {
+        Err(err) => eprintln!("Could not open file {:?} because: {}", source, err),
+        Ok(mut file) => {
+            let mut buf = String::new();
+            match file.read_to_string(&mut buf) {
+                Err(err) => eprintln!("Could not read source file {:?} because: {}", source, err),
+                Ok(_) => interpret(&buf),
+            }
+        }
+    }
+}
+
 fn main() {
-    repl()
+    let args: Args = Docopt::new(USAGE)
+        .and_then(|d| d.deserialize())
+        .unwrap_or_else(|e| e.exit());
+    match args.arg_source {
+        None => repl(),
+        Some(source) => file(source),
+    }
 }
 
