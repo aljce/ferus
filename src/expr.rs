@@ -1,7 +1,7 @@
 use std::fmt;
 use combine::{
     Parser, Stream, satisfy, satisfy_map, choice, between,
-    chainl1, attempt, optional, value,
+    chainl1, attempt, optional, value, sep_by1
 };
 
 pub mod pretty;
@@ -91,6 +91,13 @@ impl BinaryOp {
 }
 
 #[derive(Debug, Clone)]
+pub struct Definition<'a> {
+    name: &'a str,
+    argument: &'a str,
+    body: Box<Expr<'a>>
+}
+
+#[derive(Debug, Clone)]
 pub enum Expr<'a> {
     Var(&'a str),
     Lit(Literal<'a>),
@@ -125,9 +132,10 @@ pub enum Expr<'a> {
         left: Box<Expr<'a>>,
         right: Box<Expr<'a>>,
     },
-    Seq {
-        left: Box<Expr<'a>>,
-        right: Box<Expr<'a>>,
+    Seq(Vec<Expr<'a>>),
+    Funs{
+        defs: Vec<Definition<'a>>,
+        body: Box<Expr<'a>>,
     },
 }
 
@@ -202,11 +210,39 @@ impl<'a> fmt::Display for Expr<'a> {
                         draw(g, right, 10)
                     })
                 },
-                Seq{ left, right } => parens(f, 0, prec, |g| {
-                    draw(g, left, 0)?;
-                    write!(g, " ; ")?;
-                    draw(g, right, 0)
-                }),
+                Seq(sequence) => {
+                    parens(f, 0, prec, |g| {
+                        for (i, expr) in sequence.iter().enumerate() {
+                            if i < sequence.len() - 1 {
+                                draw(g, expr, 0)?;
+                                write!(g, " ; ")?;
+                            } else {
+                                draw(g, expr, 0)?;
+                            }
+                        }
+                        Ok(())
+                    })
+                },
+                Funs{ defs, body } => {
+                    fn func<'a>(h: &mut fmt::Formatter, fun: &Definition<'a>) -> fmt::Result {
+                        write!(h, "{} {} = ", fun.name, fun.argument)?;
+                        draw(h, &fun.body, 0)
+                    }
+                    parens(f, 0, prec, |g| {
+                        write!(g, "let fun ")?;
+                        for (i, function) in defs.iter().enumerate() {
+                            if i < defs.len() - 1 {
+                                func(g, function)?;
+                                write!(g, " and ")?;
+                            } else {
+                                func(g, function)?;
+                            }
+                        }
+                        write!(g, " in ")?;
+                        draw(g, body, 0)?;
+                        write!(g, " end")
+                    })
+                },
             }
         }
         draw(f, self, 0)
@@ -255,8 +291,11 @@ parser!{
 }
 
 // <prog> ::= <expn>EOF
-// <expn> ::= let val<name> = <expn> in <expn> end | if <expn> then <expn> else <expn>
+// <expn> ::= let val <name> = <expn> in <expn> end | let fun <funs> in <expn> end
+// <expn> ::= if <expn> then <expn> else <expn>
 // <expn> ::= fn <name> => <expn> | <disj>
+// <funs> ::= <funs> and <func> | <func>
+// <func> ::= <name> <name> = <expn>
 // <disj> ::= <disj> orelse <conj> | <conj>
 // <conj> ::= <conj> andalso <cmpn> | <cmpn>
 // <cmpn> ::= <addn> = <addn> | <addn> < <addn> | <addn>
@@ -282,20 +321,6 @@ parser!{
     {
         use Token::*;
         use Expr::*;
-        let let_val = struct_parser!{
-            Let {
-                _: token(Keyword(Reserved::Let)),
-                _: space(),
-                _: token(Keyword(Reserved::Val)),
-                _: space(),
-                name: name(),
-                _: lex(token(Keyword(Reserved::Equal))),
-                binder: expn().map(Box::new),
-                _: token(Keyword(Reserved::In)),
-                body: expn().map(Box::new),
-                _: token(Keyword(Reserved::End)),
-            }
-        };
         let if_then_else = struct_parser!{
             IfThenElse {
                 _: token(Keyword(Reserved::If)),
@@ -316,7 +341,53 @@ parser!{
                 body: expn().map(Box::new),
             }
         };
-        lex(choice!(let_val, if_then_else, lambda, disj()))
+        let let_val = struct_parser!{
+            Let {
+                _: token(Keyword(Reserved::Let)),
+                _: space(),
+                _: token(Keyword(Reserved::Val)),
+                _: space(),
+                name: name(),
+                _: lex(token(Keyword(Reserved::Equal))),
+                binder: expn().map(Box::new),
+                _: token(Keyword(Reserved::In)),
+                body: expn().map(Box::new),
+                _: token(Keyword(Reserved::End)),
+            }
+        };
+        let functions = struct_parser!{
+            Funs {
+                _: token(Keyword(Reserved::Let)),
+                _: space(),
+                _: token(Keyword(Reserved::Fun)),
+                _: space(),
+                defs: funs(),
+                _: token(Keyword(Reserved::In)),
+                body: expn().map(Box::new),
+                _: token(Keyword(Reserved::End)),
+            }
+        };
+        lex(choice!(if_then_else, lambda, attempt(let_val), functions, disj()))
+    }
+}
+
+parser!{
+    pub fn funs['a, Input]()(Input) -> Vec<Definition<'a>>
+    where [ Input: Stream<Item = Token<'a>> ]
+    {
+        use Token::*;
+        let function = struct_parser!{
+            Definition {
+                name: name(),
+                _: space(),
+                argument: name(),
+                _: space(),
+                _: token(Keyword(Reserved::Equal)),
+                body: expn().map(Box::new),
+            }
+        };
+        let and = token(Keyword(Reserved::And));
+        sep_by1(function, lex(and))
     }
 }
 
@@ -448,13 +519,8 @@ parser!{
     pub fn seqn['a, Input]()(Input) -> Expr<'a>
     where [ Input: Stream<Item = Token<'a>> ]
     {
-        let binary = satisfy(|t| {
-            t == Token::Delim(Delimiter::Semicolon)
-        }).map(|_| move |left, right| Expr::Seq {
-            left: Box::new(left),
-            right: Box::new(right)
-        });
-        chainl1(expn(), binary)
+        let semicolon = token(Token::Delim(Delimiter::Semicolon));
+        sep_by1(expn(), semicolon).map(Expr::Seq)
     }
 }
 

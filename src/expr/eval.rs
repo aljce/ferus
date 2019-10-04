@@ -1,7 +1,7 @@
 use std::fmt;
 use std::collections::HashMap;
 use crate::lexer::{Literal};
-use crate::expr::{UnaryOp, BinaryOp, Expr};
+use crate::expr::{UnaryOp, BinaryOp, Definition, Expr};
 
 #[derive(Debug, Clone)]
 pub struct Closure<'a> {
@@ -17,7 +17,8 @@ pub enum Value<'a> {
     Boolean(bool),
     String(&'a str),
     Tuple{ fst: Box<Value<'a>>, snd: Box<Value<'a>> },
-    Function(Closure<'a>),
+    Abstraction(Closure<'a>),
+    Function(Definition<'a>),
 }
 
 impl<'a> fmt::Display for Value<'a> {
@@ -29,13 +30,16 @@ impl<'a> fmt::Display for Value<'a> {
             Boolean(b) => write!(f, "{}", b),
             String(s) => write!(f, "{}", s),
             Tuple{ ref fst, ref snd } => write!(f, "({}, {})", fst, snd),
-            Function(Closure{ formal, ref body, ref context }) => {
+            Abstraction(Closure{ formal, ref body, ref context }) => {
                 if context.empty() {
                     write!(f, "fn {} => {}", formal, body)
                 } else {
                     write!(f, "fn {} => {} [{}]", formal, body, context)
                 }
             },
+            Function(Definition{ name, argument, ref body }) => {
+                write!(f, "{} {} = {}", name, argument, body)
+            }
         }
     }
 }
@@ -71,14 +75,6 @@ impl<'a> Value<'a> {
         match self {
             Tuple{ fst, snd } => Ok((*fst, *snd)),
             _ => Err(TypeError{ expr: self, should: Type::Tuple })
-        }
-    }
-    fn function(self) -> Result<Closure<'a>, Error<'a>> {
-        use Value::*;
-        use Error::*;
-        match self {
-            Function(c) => Ok(c),
-            _ => Err(TypeError{ expr: self, should: Type::Function })
         }
     }
 }
@@ -148,6 +144,23 @@ impl<'a> Env<'a> {
             Some(old_value) => self.context.insert(name, old_value),
             None => self.context.remove(name),
         };
+        res
+    }
+    fn add_definitions<A, F>(&mut self, definitions: Vec<Definition<'a>>, cb: F) -> A
+    where F: FnOnce(&mut Env<'a>) -> A
+    {
+        use Value::*;
+        let mut old_map = HashMap::new();
+        for def in definitions {
+            old_map.insert(def.name, self.context.insert(def.name, Function(def)));
+        }
+        let res = cb(self);
+        for (name, old) in old_map {
+            match old {
+                Some(old_value) => self.context.insert(name, old_value),
+                None => self.context.remove(name),
+            };
+        }
         res
     }
 }
@@ -247,16 +260,34 @@ impl<'a> Expr<'a> {
                 env1.extend(name, binder_val, |env2| body.eval_ctx(env2))
             },
             Lambda{ name, body } => {
-                Ok(Function(Closure{ formal: name, body: *body, context: env1.clone() }))
+                Ok(Abstraction(Closure{ formal: name, body: *body, context: env1.clone() }))
             },
             App{ left, right } => {
-                let Closure{ formal, body, mut context } = left.eval_ctx(env1)?.function()?;
-                let right_val = right.eval_ctx(env1)?;
-                context.extend(formal, right_val, |env2| body.eval_ctx(env2))
+                match left.eval_ctx(env1)? {
+                    Abstraction(Closure{ formal, body, mut context }) => {
+                        let right_val = right.eval_ctx(env1)?;
+                        context.extend(formal, right_val, |env2| body.eval_ctx(env2))
+                    },
+                    Function(Definition{ argument, body, .. }) => {
+                        let right_val = right.eval_ctx(env1)?;
+                        env1.extend(argument, right_val, |env2| body.eval_ctx(env2))
+                    },
+                    val => Err(TypeError{ expr: val, should: Type::Function }),
+                }
             },
-            Seq{ left, right } => {
-                left.eval_ctx(env1)?.unit()?;
-                right.eval_ctx(env1)
+            Seq(sequence) => {
+                let seq_len = sequence.len();
+                for (i, expr) in sequence.into_iter().enumerate() {
+                    if i < seq_len - 1 {
+                        expr.eval_ctx(env1)?.unit()?;
+                    } else {
+                        return expr.eval_ctx(env1)
+                    }
+                }
+                unreachable!()
+            },
+            Funs{ defs, body } => {
+                env1.add_definitions(defs, |env2| body.eval_ctx(env2))
             },
         }
     }
